@@ -2182,16 +2182,47 @@ void Heritage::visitIncr(FlowBlock *qnode,FlowBlock *vnode)
   int4 i,j,k;
   FlowBlock *v,*child;
   vector<FlowBlock *>::iterator iter,enditer;
+  vector<FlowBlock *>::iterator iter2;
   
   i = vnode->getIndex();
   j = qnode->getIndex();
   iter = augment[i].begin();
   enditer = augment[i].end();
+  Address lastAddr = Address();
+  set<Address>::const_iterator lastviter(phantomDeps.cend());
+  bool phantomDeps_empty = phantomDeps.empty();
+  bool overestimated_multiequal_vnode = !phantomDeps_empty
+      && phantomDeps.find(vnode->getStart()) != phantomDeps.cend();
+  /**
+   * BB A_1; call F (...); BB A_2 -> BB A_1; { BB B_1...B_k }; BB A_2
+   * Brief note : In above transformation of basic blocks, below data dependency is not mandatory.
+   * so we omit it to obtain better interpretation of data flow.
+   * or you allow it to experiment with your ingenuity.
+   * BB A_1 <-> { BB B_1...B_k, (B_K is a group of inlined block) forall K in [1,k] where B_K.getStart() == B_1.getStart() }
+   */
   for(;iter!=enditer;++iter) {
     v = *iter;
     if (v->getImmedDom()->getIndex() < j) { // If idom(v) is strict ancestor of qnode
       k = v->getIndex();
       if ((flags[k]&merged_node)==0) {
+        bool overestimated_multiequal = !phantomDeps_empty
+            && vnode->getStart() != v->getStart();
+        if (overestimated_multiequal) {
+          set<Address>::const_iterator viter;
+          bool hit = false;
+          if (lastAddr.getSpace() != NULL && lastAddr == v->getStart()) {
+            viter = lastviter;
+            hit = true;
+          } else
+            viter = phantomDeps.find(v->getStart());
+          overestimated_multiequal = overestimated_multiequal_vnode
+              || viter != phantomDeps.cend();
+          if (!hit) {
+            lastAddr = v->getStart();
+            lastviter = viter;
+          }
+        }
+        if (!overestimated_multiequal)
 	merge.push_back(v);
 	flags[k] |= merged_node;
       }
@@ -2466,6 +2497,7 @@ void Heritage::heritage(void)
   AddrSpace *stackSpace = (AddrSpace *)0;
   vector<PcodeOp *> freeStores;
   PreferSplitManager splitmanage;
+  bool reprocessStackCount_visited = false;
 
   if (maxdepth == -1)		// Has a restructure been forced
     buildADT();
@@ -2486,6 +2518,7 @@ void Heritage::heritage(void)
       info->loadGuardSearch = true;
       if (discoverIndexedStackPointers(info->space,freeStores,true)) {
 	    reprocessStackCount += 1;
+	    if (!reprocessStackCount_visited) reprocessStackCount_visited = true;
 	    stackSpace = info->space;
       }
     }
@@ -2542,7 +2575,7 @@ void Heritage::heritage(void)
   }
   placeMultiequals();
   rename();
-  if (reprocessStackCount > 0)
+  if (reprocessStackCount_visited)
     reprocessFreeStores(stackSpace, freeStores);
   analyzeNewLoadGuards();
   handleNewLoadCopies();
@@ -2661,4 +2694,5 @@ void Heritage::clear(void)
   storeGuard.clear();
   maxdepth = -1;
   pass = 0;
+  phantomDeps.clear();
 }

@@ -15,6 +15,9 @@
  */
 #include "flow.hh"
 
+#include <tuple>
+using namespace std;
+
 /// Prepare for tracing flow for a new function.
 /// The Funcdata object and references to its internal containers must be explicitly given.
 /// \param d is the new function to trace
@@ -34,6 +37,7 @@ FlowInfo::FlowInfo(Funcdata &d,PcodeOpBank &o,BlockGraph &b,vector<FuncCallSpecs
   emitter.setFuncdata(&d);
   inline_head = (Funcdata *)0;
   inline_recursion = (set<Address> *)0;
+  ezflow_inline_recursion = (set<Address> *)0;
   insn_count = 0;
   insn_max = ~((uint4)0);
   flowoverride_present = data.getOverride().hasFlowOverride();
@@ -65,12 +69,17 @@ FlowInfo::FlowInfo(Funcdata &d,PcodeOpBank &o,BlockGraph &b,vector<FuncCallSpecs
   if (inline_head != (Funcdata *)0) {
     inline_base = op2->inline_base;
     inline_recursion = &inline_base;
+    ezflow_inline_base = op2->ezflow_inline_base;
+    ezflow_inline_recursion = &ezflow_inline_base;
   }
-  else
-    inline_recursion = (set<Address> *)0;
+  else {
+    inline_recursion = (set<Address>*) 0;
+    ezflow_inline_recursion = (set<Address>*) 0;
+  }
   insn_count = op2->insn_count;
   insn_max = op2->insn_max;
   flowoverride_present = data.getOverride().hasFlowOverride();
+  pendingmarkbasicstart = op2->pendingmarkbasicstart;
 }
 
 void FlowInfo::clearProperties(void)
@@ -91,7 +100,7 @@ PcodeOp *FlowInfo::fallthruOp(PcodeOp *op) const
   ++iter;
   if (iter != obank.endDead()) {
     retop = *iter;
-    if (!retop->isInstructionStart()) // If within same instruction
+    if (retop->getAddr() == op->getAddr()) // If within same instruction
       return retop;		// Then this is the fall thru
   }
   // Find address of instruction containing this op
@@ -262,17 +271,18 @@ PcodeOp *FlowInfo::xrefControlFlow(list<PcodeOp *>::const_iterator oiter,bool &s
     case CPUI_CBRANCH:
     {
 	const Address &destaddr( op->getIn(0)->getAddr() );
+  pendingmarkbasicstart.push_back(op);
 	if (destaddr.isConstant()) {
 	  Address fallThruAddr;
 	  PcodeOp *destop = findRelTarget(op,fallThruAddr);
 	  if (destop != (PcodeOp *)0) {
-	    data.opMarkStartBasic(destop);	// Make sure the target op is a basic block start
 	    uintm newtime = destop->getTime();
 	    if (newtime > maxtime)
 	      maxtime = newtime;
 	  }
-	  else
+	  else {
 	    isfallthru = true;		// Relative branch is to end of instruction
+	  }
 	}
 	else
 	  newAddress(op,destaddr); // Generate branch address
@@ -282,17 +292,18 @@ PcodeOp *FlowInfo::xrefControlFlow(list<PcodeOp *>::const_iterator oiter,bool &s
     case CPUI_BRANCH:
       {
 	const Address &destaddr( op->getIn(0)->getAddr() );
+  pendingmarkbasicstart.push_back(op);
 	if (destaddr.isConstant()) {
 	  Address fallThruAddr;
 	  PcodeOp *destop = findRelTarget(op,fallThruAddr);
 	  if (destop != (PcodeOp *)0) {
-	    data.opMarkStartBasic(destop);	// Make sure the target op is a basic block start
 	    uintm newtime = destop->getTime();
 	    if (newtime > maxtime)
 	      maxtime = newtime;
 	  }
-	  else
+	  else {
 	    isfallthru = true;		// Relative branch is to end of instruction
+	  }
 	}
 	else
 	  newAddress(op,destaddr); // Generate branch address
@@ -694,9 +705,26 @@ bool FlowInfo::setupCallindSpecs(PcodeOp *op,FuncCallSpecs *fc)
   res = new FuncCallSpecs(op);
   qlst.push_back(res);
 
+  bool skipoverride = false;
+  do {
+    //I dunno try below.
+    //if (fc != NULL)
+    //  break;
+    if (ezflow_inline_recursion == NULL)
+      break;
+    if (ezflow_inline_recursion->empty())
+      break;
+    if (ezflow_inline_recursion->find(op->getAddr())
+        == ezflow_inline_recursion->cend())
+      break;
+    skipoverride = true;
+  } while (false);
+
+  if (!skipoverride)
   data.getOverride().applyIndirect(data,*res);
   if (fc != (FuncCallSpecs *)0 && fc->getEntryAddress() == res->getEntryAddress())
     res->setAddress(Address()); // Cancel any indirect override
+  if (!skipoverride)
   data.getOverride().applyPrototype(data,*res);
   queryCall(*res);
 
@@ -733,9 +761,14 @@ void FlowInfo::truncateIndirectJump(PcodeOp *op,int4 failuremode)
 bool FlowInfo::isInArray(vector<PcodeOp *> &array,PcodeOp *op)
 
 {
+  if (!ezflow_inline_recursion)
+    ezflow_inline_recursion = &ezflow_inline_base;
   for(int4 i=0;i<array.size();++i) {
     if (array[i] == op) return true;
   }
+  if (ezflow_inline_recursion->find(op->getAddr())
+      != ezflow_inline_recursion->cend())
+    return true;
   return false;
 }
 
@@ -780,6 +813,14 @@ void FlowInfo::generateOps(void)
     if (hasInject())
       injectPcode();
   } while(!tablelist.empty());	// Inlining or multistage may have added new indirect branches
+  for (vector<PcodeOp*>::const_iterator it = pendingmarkbasicstart.cbegin();
+      it != pendingmarkbasicstart.cend(); it++) {
+    PcodeOp *destop = branchTarget(*it);
+    if (destop != (PcodeOp*) 0) {
+      data.opMarkStartBasic(destop); // Make sure the target op is a basic block start
+    }
+  }
+  pendingmarkbasicstart.clear();
 }
 
 void FlowInfo::generateBlocks(void)
@@ -1006,6 +1047,7 @@ void FlowInfo::forwardRecursion(const FlowInfo &op2)
 {
   inline_recursion = op2.inline_recursion;
   inline_head = op2.inline_head;
+  ezflow_inline_recursion = op2.ezflow_inline_recursion;
 }
 
 /// If the given injected op is a CALL, CALLIND, or BRANCHIND,
@@ -1065,17 +1107,164 @@ void FlowInfo::inlineClone(const FlowInfo &inlineflow,const Address &retaddr)
 /// the Funcdata for \b this flow but are reassigned a new fixed address,
 /// and the RETURN op is eliminated.
 /// \param inlineflow is the given in-line flow to clone
-/// \param calladdr is the fixed address assigned to the cloned PcodeOps
-void FlowInfo::inlineEZClone(const FlowInfo &inlineflow,const Address &calladdr)
+/// \param callop is the PcodeOp responsible for cloning PcodeOps of the FuncData.
+void FlowInfo::inlineEZClone(const FlowInfo &inlineflow, PcodeOp *&callop)
 
 {
-  list<PcodeOp *>::const_iterator iter;
-  for(iter=inlineflow.data.beginOpDead();iter!=inlineflow.data.endOpDead();++iter) {
-    PcodeOp *op = *iter;
-    if (op->code() == CPUI_RETURN) break;
-    SeqNum myseq(calladdr,op->getSeqNum().getTime());
-    data.cloneOp(op,myseq);
+  map<Address, SeqNum> rewriteseq;
+  using pileof_inlineEZ = std::tuple<PcodeOp*, uint4>;
+  using worklist_t=vector<pileof_inlineEZ>;
+  worklist_t worklist, worklist_injectbranch;
+  AddrSpace *spc = data.getArch()->getDefaultCodeSpace();
+  Address addr(spc, -1);
+  const Address &calladdr = callop->getAddr();
+  const SeqNum &callseq = callop->getSeqNum();
+  //!section FlowInfo::testHardInlineRestrictions.
+  bool skipreturnencounter = false;
+  PcodeOp *&op = callop;
+  list<PcodeOp*>::iterator iter = op->getInsertIter();
+  ++iter;
+  if (iter == obank.endDead()) {
+    skipreturnencounter = true;
   }
+  bool addrisconstant = false;
+  PcodeOp *nextop = NULL;
+  if (!skipreturnencounter)
+  nextop = *iter;
+  Address constzero = glb->getConstant(0);
+  const Address &retaddr = skipreturnencounter ? constzero : nextop->getAddr();
+  addrisconstant = calladdr == retaddr;
+  ezflow_inline_recursion->insert(op->getAddr());
+  // If the inlining "jumps back" this starts a new basic block
+  if (!skipreturnencounter)
+    data.opMarkStartBasic(nextop);
+  //!section end
+  for (list<PcodeOp*>::const_iterator iter = inlineflow.data.beginOpDead();
+      iter != inlineflow.data.endOpDead(); ++iter) {
+    PcodeOp *op = *iter;
+    SeqNum myseq(calladdr, op->getSeqNum().getTime());
+    bool docont = false;
+    if (op->code() == CPUI_RETURN) {
+      // Old logic did end rewriting at here.
+      if (skipreturnencounter)
+        break;
+      Varnode *vnretAddr;
+      if (addrisconstant)
+        vnretAddr = data.newConstant(4,
+            (uint4) (nextop->getTime() - op->getTime()));
+      else
+        vnretAddr = data.newCodeRef(retaddr);
+      // Set a fallthrough address as it's done in inlineClone.
+      PcodeOp *retop = data.newOp(1, myseq);
+      data.opSetOpcode(retop, OpCode::CPUI_BRANCH);
+      data.opSetInput(retop, vnretAddr, 0);
+      docont = true;
+    }
+    const Address &addr2 = op->getSeqNum().getAddr();
+    bool doput = addr2 != addr;
+    // Keep record of an association about an address update operation.
+    if (doput) {
+      rewriteseq[addr2] = myseq;
+      addr = addr2;
+    }
+    if (docont)
+      continue;
+    // Pile of to-do list.
+    PcodeOp *cloneop = data.cloneOp(op, myseq);
+    if (cloneop->isCallOrBranch())
+      xrefInlinedBranch(cloneop);
+    do {
+      bool dobreak = true;
+      if (cloneop->code() == OpCode::CPUI_CBRANCH)
+        dobreak = false;
+      else if (cloneop->code() == OpCode::CPUI_BRANCH)
+        dobreak = false;
+      if (dobreak)
+        break;
+
+      for (int4 i = 0; i < cloneop->numInput(); i++) {
+        if (spc != cloneop->getIn(i)->getSpace())
+          continue;
+        pileof_inlineEZ tup = make_tuple(cloneop, (uint4) i);
+        worklist.push_back(tup);
+      }
+    } while (false);
+  }
+
+  bool first = true;
+  PcodeOpTree::const_iterator iter2;
+  for (PcodeOpTree::const_iterator iter = inlineflow.data.beginOpAll();
+      iter != inlineflow.data.endOpAll(); ++iter) {
+    // Pile of to-do list. A first op with decreasing sequence number is followed by a branch op to meet the correspondance with *fallthruOp* result even after the op is cloned.
+    do {
+      if (first && iter == inlineflow.data.beginOpAll()) {
+        first = false;
+        break;
+      }
+      iter2 = iter;
+      --iter2;
+      uint4 iter2t = (iter2->second)->getTime();
+      uint4 itert = (iter->second)->getTime();
+      if (iter2t <= itert)
+        break;
+      const SeqNum &sq_iter2(iter2->second->getSeqNum());
+      PcodeOp *inlineop_data = data.findOp(
+          SeqNum(calladdr, sq_iter2.getTime()));
+      if (inlineop_data == NULL)
+        break;
+      worklist_injectbranch.emplace_back(inlineop_data, itert);
+    } while (false);
+  }
+
+  do {
+    for (worklist_t::const_iterator it = worklist_injectbranch.cbegin();
+        it != worklist_injectbranch.cend(); it++) {
+      worklist_t::const_reference work = (*it);
+      PcodeOp *opclone1 = std::get<0>(work);
+      uint4 targetSeq = std::get<1>(work);
+      PcodeOp *opnew = data.newOp(1, calladdr);
+      data.opSetOpcode(opnew, CPUI_BRANCH);
+      data.opSetInput(opnew, data.newConstant(4, targetSeq - opnew->getTime()),
+          0);
+      data.opDeadInsertAfter(opnew, opclone1);
+    }
+  } while (false);
+  do {
+    const map<Address,VisitStat>& visited(inlineflow.visited);
+    for (worklist_t::const_iterator it = worklist.cbegin();
+        it != worklist.cend(); it++) {
+      worklist_t::const_reference work = (*it);
+      PcodeOp *const&opclone1 = std::get<0>(work);
+      uint4 ix = std::get<1>(work);
+      const Address &addr = opclone1->getIn(ix)->getAddr();
+      const Address *paddr = &addr;
+      map<Address, SeqNum>::const_iterator iter = rewriteseq.find(*paddr);
+      bool docont = false;
+      while (iter == rewriteseq.cend())
+      {
+        map<Address,VisitStat>::const_iterator viter = visited.find(*paddr);
+        if (viter==visited.cend()){
+          docont = true;
+          break;
+        }
+        viter = visited.find( (*viter).first + (*viter).second.size );
+        if (viter==visited.cend()){
+          docont = true;
+          break;
+        }
+        paddr = &viter->first;
+        iter = rewriteseq.find(*paddr);
+      }
+      if (docont)
+        continue;
+      const SeqNum &foundseq = rewriteseq[*paddr];
+      const SeqNum &cloneseq = opclone1->getSeqNum();
+      // Use associations info to inhabit PcodeOps.
+      Varnode *vnconst = data.newConstant(4,
+          (uint4) (foundseq.getTime() - cloneseq.getTime()));
+      data.opSetInput(opclone1, vnconst, ix);
+    }
+  } while (false);
   // Because we are processing only straightline code and it is all getting assigned to one
   // address, we don't touch unprocessed, addrlist, or visited
 }
@@ -1121,18 +1310,20 @@ bool FlowInfo::testHardInlineRestrictions(Funcdata *inlinefd,PcodeOp *op,Address
   return true;
 }
 
-/// A function is in the EZ model if it is a straight-line leaf function.
-/// \return \b true if this flow contains no CALL or BRANCH ops
+/// A function is in the EZ model if it is function without an indirect jump and an noreturn attribute.
+/// \return \b true if this flow contains no CALLIND or BRANCHIND ops.
 bool FlowInfo::checkEZModel(void) const
 
 {
-  list<PcodeOp *>::const_iterator iter = obank.beginDead();
-  while(iter != obank.endDead()) {
-    PcodeOp *op = *iter;
-    if (op->isCallOrBranch()) return false;
-    ++iter;
+  do{
+   if (data.getFuncProto().isNoReturn())
+     break;
+   if (!tablelist.empty())
+      break;
+   return true;
   }
-  return true;
+  while(false);
+  return false;
 }
 
 /// \brief Inject the given payload into \b this flow
@@ -1286,6 +1477,7 @@ void FlowInfo::injectPcode(void)
     inline_recursion = &inline_base;
     inline_recursion->insert(data.getAddress()); // Insert ourselves
     //    inline_head = (Funcdata *)0;
+    ezflow_inline_recursion = &ezflow_inline_base;
   }
   else {
     inline_recursion->insert(data.getAddress()); // Insert ourselves
