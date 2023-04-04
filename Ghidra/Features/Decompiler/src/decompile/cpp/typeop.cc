@@ -1918,6 +1918,12 @@ string TypeOpPiece::getOperatorName(const PcodeOp *op) const
   return s.str();
 }
 
+Datatype *TypeOpPiece::getInputCast(const PcodeOp *op,int4 slot,const CastStrategy *castStrategy) const
+
+{
+  return (Datatype *)0;		// Never need a cast into a PIECE
+}
+
 Datatype *TypeOpPiece::getOutputToken(const PcodeOp *op,CastStrategy *castStrategy) const
 
 {
@@ -1943,6 +1949,12 @@ string TypeOpSubpiece::getOperatorName(const PcodeOp *op) const
 
   s << name << dec << op->getIn(0)->getSize() << op->getOut()->getSize();
   return s.str();
+}
+
+Datatype *TypeOpSubpiece::getInputCast(const PcodeOp *op,int4 slot,const CastStrategy *castStrategy) const
+
+{
+  return (Datatype *)0;		// Never need a cast into a SUBPIECE
 }
 
 Datatype *TypeOpSubpiece::getOutputToken(const PcodeOp *op,CastStrategy *castStrategy) const
