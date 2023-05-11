@@ -114,6 +114,7 @@ public class AutoAnalysisManager implements DomainObjectListener, DomainObjectCl
 	private Thread analysisThread;
 	private AnalysisTaskWrapper activeTask;
 	private Stack<AnalysisTaskWrapper> yieldedTasks = new Stack<>();
+	private boolean alreadyAskedThisSession = false;
 
 	/**
 	 * This variable is a poorly defined concept.  Essentially, this value is <b>intended</b> to
@@ -1116,6 +1117,12 @@ public class AutoAnalysisManager implements DomainObjectListener, DomainObjectCl
 		// where multiple threads check the flag before either thread has a chance to set it.
 		Swing.assertSwingThread("Asking to analyze must be on the swing thread!");
 
+		// We only ever want to ask once per session even if they said it is ok to ask again
+		if (alreadyAskedThisSession) {
+			return false;
+		}
+		alreadyAskedThisSession = true;
+
 		if (GhidraProgramUtilities.shouldAskToAnalyze(program)) {
 			String name = HTMLUtilities.escapeHTML(program.getDomainFile().getName());
 			HelpLocation help = new HelpLocation("AutoAnalysisPlugin", "Ask_To_Analyze");
@@ -1362,11 +1369,11 @@ public class AutoAnalysisManager implements DomainObjectListener, DomainObjectCl
 			throw new UnsupportedOperationException(
 				"AutoAnalysisManager.scheduleWorker may not be invoked from Swing thread");
 		}
-		workerMonitor.checkCanceled();
+		workerMonitor.checkCancelled();
 
 		AnalysisWorkerCommand cmd =
 			new AnalysisWorkerCommand(worker, workerContext, analyzeChanges, workerMonitor);
-		workerMonitor.checkCanceled();
+		workerMonitor.checkCancelled();
 
 		// NOTE: It is very important that the worker cmd not run concurrent with analysis
 		if (SystemUtilities.isInHeadlessMode()) {
@@ -1395,7 +1402,7 @@ public class AutoAnalysisManager implements DomainObjectListener, DomainObjectCl
 			}
 		}
 
-		workerMonitor.checkCanceled();
+		workerMonitor.checkCancelled();
 		Msg.debug(this, "Analysis worker completed (" + cmd.worker.getWorkerName() + "): " +
 			cmd.worker.getClass());
 
@@ -1549,11 +1556,11 @@ public class AutoAnalysisManager implements DomainObjectListener, DomainObjectCl
 		public long getMaximum() {
 			return Math.max(primaryMonitor.getMaximum(), secondaryMonitor.getMaximum());
 		}
-
+		
 		@Override
 		public void checkCanceled() throws CancelledException {
-			primaryMonitor.checkCanceled();
-			secondaryMonitor.checkCanceled();
+			primaryMonitor.checkCancelled();
+			secondaryMonitor.checkCancelled();
 		}
 
 		@Override
@@ -1596,8 +1603,8 @@ public class AutoAnalysisManager implements DomainObjectListener, DomainObjectCl
 
 		@Override
 		public void clearCanceled() {
-			primaryMonitor.clearCanceled();
-			secondaryMonitor.clearCanceled();
+			primaryMonitor.clearCancelled();
+			secondaryMonitor.clearCancelled();
 		}
 	}
 
@@ -1740,7 +1747,7 @@ public class AutoAnalysisManager implements DomainObjectListener, DomainObjectCl
 					analysisMonitor.removeCancelledListener(this);
 					analysisMonitor.setCancelEnabled(true);
 					// prevent cancel from affecting other queued analysis
-					analysisMonitor.clearCanceled();
+					analysisMonitor.clearCancelled();
 				}
 
 				synchronized (this) {

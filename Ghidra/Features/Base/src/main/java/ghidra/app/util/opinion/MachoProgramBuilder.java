@@ -48,6 +48,7 @@ import ghidra.program.model.reloc.RelocationResult;
 import ghidra.program.model.reloc.RelocationTable;
 import ghidra.program.model.symbol.*;
 import ghidra.program.model.util.CodeUnitInsertionException;
+import ghidra.program.util.ExternalSymbolResolver;
 import ghidra.util.Msg;
 import ghidra.util.NumericUtilities;
 import ghidra.util.exception.*;
@@ -473,7 +474,7 @@ public class MachoProgramBuilder {
  		monitor.setMessage("Processing unsupported load commands...");
 
  		for (LoadCommand loadCommand : machoHeader.getLoadCommands(UnsupportedLoadCommand.class)) {
- 			monitor.checkCanceled();
+ 			monitor.checkCancelled();
  			log.appendMsg(loadCommand.getCommandName());
  		}
  	}
@@ -601,27 +602,46 @@ public class MachoProgramBuilder {
 		}
 	}
 
-	protected void processLibraries() {
+	protected void processLibraries() throws Exception {
 		monitor.setMessage("Processing libraries...");
-		List<LoadCommand> commands = machoHeader.getLoadCommands();
-		for (LoadCommand command : commands) {
+
+		Options props = program.getOptions(Program.PROGRAM_INFO);
+		int libraryIndex = 0;
+
+		for (LoadCommand command : machoHeader.getLoadCommands()) {
 			if (monitor.isCancelled()) {
 				return;
 			}
-			if (command instanceof DynamicLibraryCommand) {
-				DynamicLibraryCommand dylibCommand = (DynamicLibraryCommand) command;
+
+			String libraryPath = null;
+
+			if (command instanceof DynamicLibraryCommand dylibCommand) {
 				DynamicLibrary dylib = dylibCommand.getDynamicLibrary();
-				addLibrary(dylib.getName().getString());
+				libraryPath = dylib.getName().getString();
 			}
-			else if (command instanceof SubLibraryCommand) {
-				SubLibraryCommand sublibCommand = (SubLibraryCommand) command;
-				addLibrary(sublibCommand.getSubLibraryName().getString());
+			else if (command instanceof SubLibraryCommand sublibCommand) {
+				libraryPath = sublibCommand.getSubLibraryName().getString();
 			}
-			else if (command instanceof PreboundDynamicLibraryCommand) {
-				PreboundDynamicLibraryCommand pbdlCommand = (PreboundDynamicLibraryCommand) command;
-				addLibrary(pbdlCommand.getLibraryName());
+			else if (command instanceof PreboundDynamicLibraryCommand pbdlCommand) {
+				libraryPath = pbdlCommand.getLibraryName();
+			}
+
+			if (libraryPath != null) {
+				// For now, strip off the full path and just the use the filename.  We will utilize
+				// the full path one day when we started looking in dyld_shared_cache files for
+				// libraries.
+				int index = libraryPath.lastIndexOf("/");
+				String libraryName = index != -1 ? libraryPath.substring(index + 1) : libraryPath;
+				if (!libraryName.equals(program.getName())) {
+					addLibrary(libraryName);
+					props.setString(
+						ExternalSymbolResolver.getRequiredLibraryProperty(libraryIndex++),
+						libraryName);
+				}
 			}
 		}
+
+		program.getSymbolTable().createExternalLibrary(Library.UNKNOWN, SourceType.IMPORTED);
 	}
 
 	protected void processProgramDescription() {
@@ -1131,7 +1151,7 @@ public class MachoProgramBuilder {
 
 		LinkedHashMap<RelocationInfo, Address> relocationMap = new LinkedHashMap<>();
  		for (Section section : machoHeader.getAllSections()) {
- 			monitor.checkCanceled();
+ 			monitor.checkCancelled();
 
 			MemoryBlock sectionMemoryBlock = getMemoryBlock(section);
 			if (sectionMemoryBlock == null) {
@@ -1143,7 +1163,7 @@ public class MachoProgramBuilder {
 			}
 
 			for (RelocationInfo relocationInfo : section.getRelocations()) {
- 				monitor.checkCanceled();
+ 				monitor.checkCancelled();
 				Address address = sectionMemoryBlock.getStart().add(relocationInfo.getAddress());
 				relocationMap.put(relocationInfo, address);
 			}
@@ -1163,9 +1183,9 @@ public class MachoProgramBuilder {
 		LinkedHashMap<RelocationInfo, Address> relocationMap = new LinkedHashMap<>();
  		for (DynamicSymbolTableCommand cmd : machoHeader
  				.getLoadCommands(DynamicSymbolTableCommand.class)) {
- 			monitor.checkCanceled();
+ 			monitor.checkCancelled();
  			for (RelocationInfo relocationInfo : cmd.getExternalRelocations()) {
- 				monitor.checkCanceled();
+ 				monitor.checkCancelled();
  				relocationMap.put(relocationInfo, space.getAddress(relocationInfo.getAddress()));
  			}
  		}
@@ -1184,9 +1204,9 @@ public class MachoProgramBuilder {
 		LinkedHashMap<RelocationInfo, Address> relocationMap = new LinkedHashMap<>();
  		for (DynamicSymbolTableCommand cmd : machoHeader
  				.getLoadCommands(DynamicSymbolTableCommand.class)) {
- 			monitor.checkCanceled();
+ 			monitor.checkCancelled();
  			for (RelocationInfo relocationInfo : cmd.getLocalRelocations()) {
- 				monitor.checkCanceled();
+ 				monitor.checkCancelled();
  				relocationMap.put(relocationInfo, space.getAddress(relocationInfo.getAddress()));
  			}
  		}
@@ -1562,7 +1582,7 @@ public class MachoProgramBuilder {
 
 		monitor.setMaximum(pageStartsCount);
 		for (int index = 0; index < pageStartsCount; index++) {
-			monitor.checkCanceled();
+			monitor.checkCancelled();
 
 			long page = dataPageStart + (pageSize * index);
 
@@ -1639,7 +1659,7 @@ public class MachoProgramBuilder {
 		long next = -1;
 		boolean start = true;
 		while (next != 0) {
-			monitor.checkCanceled();
+			monitor.checkCancelled();
 
 			Address chainLoc = chainStart.add(nextOff);
 			final long chainValue = DyldChainedPtr.getChainValue(memory, chainLoc, pointerFormat);
@@ -1819,7 +1839,7 @@ public class MachoProgramBuilder {
 	 */
 	protected void markupChainedFixups(List<Address> chainedFixups) throws CancelledException {
 		for (Address addr : chainedFixups) {
-			monitor.checkCanceled();
+			monitor.checkCancelled();
 			try {
 				listing.createData(addr, Pointer64DataType.dataType);
 			}
