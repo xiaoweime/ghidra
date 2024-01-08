@@ -33,12 +33,15 @@
 
 if [ -d ${GHIDRA_HOME}/ghidra/.git ]
 then
-  export PYTHONPATH=$GHIDRA_HOME/ghidra/Ghidra/Debug/Debugger-agent-gdb/build/pypkg/src:$GHIDRA_HOME/ghidra/Ghidra/Debug/Debugger-rmi-trace/build/pypkg/src:$PYTHONPATH
+  export PYTHONPATH=$GHIDRA_HOME/ghidra/Ghidra/Debug/Debugger-agent-gdb/build/pypkg/src:$PYTHONPATH
+  export PYTHONPATH=$GHIDRA_HOME/ghidra/Ghidra/Debug/Debugger-rmi-trace/build/pypkg/src:$PYTHONPATH
 elif [ -d ${GHIDRA_HOME}/.git ]
 then 
-  export PYTHONPATH=$GHIDRA_HOME/Ghidra/Debug/Debugger-agent-gdb/build/pypkg/src:$GHIDRA_HOME/Ghidra/Debug/Debugger-rmi-trace/build/pypkg/src:$PYTHONPATH
+  export PYTHONPATH=$GHIDRA_HOME/Ghidra/Debug/Debugger-agent-gdb/build/pypkg/src:$PYTHONPATH
+  export PYTHONPATH=$GHIDRA_HOME/Ghidra/Debug/Debugger-rmi-trace/build/pypkg/src:$PYTHONPATH
 else
-  export PYTHONPATH=$GHIDRA_HOME/Ghidra/Debug/Debugger-agent-gdb/pypkg/src:$GHIDRA_HOME/Ghidra/Debug/Debugger-rmi-trace/build/pypkg/src:$PYTHONPATH
+  export PYTHONPATH=$GHIDRA_HOME/Ghidra/Debug/Debugger-agent-gdb/pypkg/src:$PYTHONPATH
+  export PYTHONPATH=$GHIDRA_HOME/Ghidra/Debug/Debugger-rmi-trace/pypkg/src:$PYTHONPATH
 fi
 
 target_image="$1"
@@ -46,7 +49,10 @@ shift
 target_args="$@"
 
 "$OPT_GDB_PATH" \
+  -q \
   -ex "set pagination off" \
+  -ex "set confirm off" \
+  -ex "show version" \
   -ex "python import ghidragdb" \
   -ex "file \"$target_image\"" \
   -ex "set args $target_args" \
@@ -55,4 +61,5 @@ target_args="$@"
   -ex "ghidra trace start" \
   -ex "ghidra trace sync-enable" \
   -ex "$OPT_START_CMD" \
+  -ex "set confirm on" \
   -ex "set pagination on"

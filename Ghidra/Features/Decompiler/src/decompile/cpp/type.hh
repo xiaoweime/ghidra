@@ -122,11 +122,31 @@ enum sub_metatype {
   SUB_UNION = 1,		///< Compare as TYPE_UNION
   SUB_PARTIALUNION = 0		///< Compare as a TYPE_PARTIALUNION
 };
+
+/// Data-type classes for the purpose of assigning storage
+enum type_class {
+  TYPECLASS_GENERAL = 0,	///< General purpose
+  TYPECLASS_FLOAT = 1,		///< Floating-point data-types
+  TYPECLASS_PTR = 2,		///< Pointer data-types
+  TYPECLASS_HIDDENRET = 3,	///< Class for hidden return values
+  TYPECLASS_VECTOR = 4,		///< Vector data-types
+  TYPECLASS_CLASS1 = 100,	///< Architecture specific class 1
+  TYPECLASS_CLASS2 = 101,	///< Architecture specific class 2
+  TYPECLASS_CLASS3 = 102,	///< Architecture specific class 3
+  TYPECLASS_CLASS4 = 103	///< Architecture specific class 4
+};
+
 /// Convert type \b meta-type to name
 extern void metatype2string(type_metatype metatype,string &res);
 
 /// Convert string to type \b meta-type
 extern type_metatype string2metatype(const string &metastring);
+
+/// Convert a string to a data-type class
+extern type_class string2typeclass(const string &classstring);
+
+/// Convert a data-type metatype to a data-type class
+extern type_class metatype2typeclass(type_metatype meta);
 
 class Architecture;		// Forward declarations
 class PcodeOp;
@@ -172,7 +192,7 @@ protected:
   int4 alignment;		///< Byte alignment expected for \b this data-type in addressable memory
   int4 alignSize;		///< Size of data-type rounded up to a multiple of \b alignment
   void decodeBasic(Decoder &decoder);	///< Recover basic data-type properties
-  void encodeBasic(type_metatype meta,Encoder &encoder) const;	///< Encode basic data-type properties
+  void encodeBasic(type_metatype meta,int4 align,Encoder &encoder) const;	///< Encode basic data-type properties
   void encodeTypedef(Encoder &encoder) const;	///< Encode \b this as a \e typedef element to a stream
   void markComplete(void) { flags &= ~(uint4)type_incomplete; }		///< Mark \b this data-type as completely defined
   void setDisplayFormat(uint4 format);		///< Set a specific display format
@@ -258,6 +278,7 @@ public:
   int4 typeOrderBool(const Datatype &op) const;	///< Order \b this with -op-, treating \e bool data-type as special
   void encodeRef(Encoder &encoder) const;	///< Encode a reference of \b this to a stream
   bool isPieceStructured(void) const;		///< Does \b this data-type consist of separate pieces?
+  bool isPrimitiveWhole(void) const;		///< Is \b this made up of a single primitive
   static uint4 encodeIntegerFormat(const string &val);
   static string decodeIntegerFormat(uint4 val);
 };
@@ -470,7 +491,7 @@ class TypeStruct : public Datatype {
 protected:
   friend class TypeFactory;
   vector<TypeField> field;			///< The list of fields
-  void setFields(const vector<TypeField> &fd);	///< Establish fields for \b this
+  void setFields(const vector<TypeField> &fd,int4 fixedSize,int4 fixedAlign);	///< Establish fields for \b this
   int4 getFieldIter(int4 off) const;		///< Get index into field list
   int4 getLowerBoundField(int4 off) const;	///< Get index of last field before or equal to given offset
   void decodeFields(Decoder &decoder,TypeFactory &typegrp);	///< Restore fields from a stream
@@ -505,7 +526,7 @@ class TypeUnion : public Datatype {
 protected:
   friend class TypeFactory;
   vector<TypeField> field;			///< The list of fields
-  void setFields(const vector<TypeField> &fd);	///< Establish fields for \b this
+  void setFields(const vector<TypeField> &fd,int4 fixedSize,int4 fixedAlign);	///< Establish fields for \b this
   void decodeFields(Decoder &decoder,TypeFactory &typegrp);	///< Restore fields from a stream
 public:
   TypeUnion(const TypeUnion &op);	///< Construct from another TypeUnion
@@ -616,7 +637,7 @@ public:
 };
 
 class FuncProto;		// Forward declaration
-class ProtoModel;
+class PrototypePieces;
 
 /// \brief Datatype object representing executable code.
 ///
@@ -626,9 +647,7 @@ protected:
   friend class TypeFactory;
   FuncProto *proto;		///< If non-null, this describes the prototype of the underlying function
   TypeFactory *factory;		///< Factory owning \b this
-  void setPrototype(TypeFactory *tfact,ProtoModel *model,
-		    Datatype *outtype,const vector<Datatype *> &intypes,
-		    bool dotdotdot,Datatype *voidtype);	///< Establish a function pointer
+  void setPrototype(TypeFactory *tfact,const PrototypePieces &sig,Datatype *voidtype);	///< Establish a function pointer
   void setPrototype(TypeFactory *typegrp,const FuncProto *fp);	///< Set a particular function prototype on \b this
   void decodeStub(Decoder &decoder);		///< Restore stub of data-type without the full prototype
   void decodePrototype(Decoder &decoder,bool isConstructor,bool isDestructor,TypeFactory &typegrp);	///< Restore any prototype description
@@ -727,8 +746,8 @@ public:
   Datatype *findByName(const string &n);		///< Return type of given name
   Datatype *setName(Datatype *ct,const string &n); 	///< Set the given types name
   void setDisplayFormat(Datatype *ct,uint4 format);	///< Set the display format associated with the given data-type
-  bool setFields(vector<TypeField> &fd,TypeStruct *ot,int4 fixedsize,uint4 flags);	///< Set fields on a TypeStruct
-  bool setFields(vector<TypeField> &fd,TypeUnion *ot,int4 fixedsize,uint4 flags);	///< Set fields on a TypeUnion
+  bool setFields(vector<TypeField> &fd,TypeStruct *ot,int4 fixedsize,int4 fixedalign,uint4 flags);	///< Set fields on a TypeStruct
+  bool setFields(vector<TypeField> &fd,TypeUnion *ot,int4 fixedsize,int4 fixedalign,uint4 flags);	///< Set fields on a TypeUnion
   void setPrototype(const FuncProto *fp,TypeCode *newCode,uint4 flags);	///< Set the prototype on a TypeCode
   bool setEnumValues(const vector<string> &namelist,
 		      const vector<uintb> &vallist,
@@ -752,9 +771,7 @@ public:
   TypePartialUnion *getTypePartialUnion(TypeUnion *contain,int4 off,int4 sz);	///< Create a partial union
   TypeEnum *getTypeEnum(const string &n);			///< Create an (empty) enumeration
   TypeSpacebase *getTypeSpacebase(AddrSpace *id,const Address &addr);	///< Create a "spacebase" type
-  TypeCode *getTypeCode(ProtoModel *model,Datatype *outtype,
-			const vector<Datatype *> &intypes,
-			bool dotdotdot);			///< Create a "function" datatype
+  TypeCode *getTypeCode(const PrototypePieces &proto);			///< Create a "function" datatype
   Datatype *getTypedef(Datatype *ct,const string &name,uint8 id,uint4 format);	///< Create a new \e typedef data-type
   TypePointerRel *getTypePointerRel(TypePointer *parentPtr,Datatype *ptrTo,int4 off);	///< Get pointer offset relative to a container
   TypePointerRel *getTypePointerRel(int4 sz,Datatype *parent,Datatype *ptrTo,int4 ws,int4 off,const string &nm);

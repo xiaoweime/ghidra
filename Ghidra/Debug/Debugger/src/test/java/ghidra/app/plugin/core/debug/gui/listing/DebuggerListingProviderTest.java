@@ -40,7 +40,7 @@ import ghidra.app.plugin.assembler.*;
 import ghidra.app.plugin.core.codebrowser.CodeBrowserPlugin;
 import ghidra.app.plugin.core.codebrowser.CodeViewerProvider;
 import ghidra.app.plugin.core.codebrowser.hover.ReferenceListingHoverPlugin;
-import ghidra.app.plugin.core.debug.gui.AbstractGhidraHeadedDebuggerGUITest;
+import ghidra.app.plugin.core.debug.gui.AbstractGhidraHeadedDebuggerTest;
 import ghidra.app.plugin.core.debug.gui.DebuggerResources;
 import ghidra.app.plugin.core.debug.gui.DebuggerResources.FollowsCurrentThreadAction;
 import ghidra.app.plugin.core.debug.gui.action.*;
@@ -77,7 +77,7 @@ import ghidra.util.exception.VersionException;
 import ghidra.util.task.TaskMonitor;
 
 @Category(NightlyCategory.class)
-public class DebuggerListingProviderTest extends AbstractGhidraHeadedDebuggerGUITest {
+public class DebuggerListingProviderTest extends AbstractGhidraHeadedDebuggerTest {
 
 	protected DebuggerListingPlugin listingPlugin;
 	protected DebuggerListingProvider listingProvider;
@@ -94,6 +94,9 @@ public class DebuggerListingProviderTest extends AbstractGhidraHeadedDebuggerGUI
 
 		listingPlugin = addPlugin(tool, DebuggerListingPlugin.class);
 		listingProvider = waitForComponentProvider(DebuggerListingProvider.class);
+
+		// TODO: If a task crashes, the test framework hangs.
+		listingProvider.setAutoDisassemble(false);
 
 		mappingService = tool.getService(DebuggerStaticMappingService.class);
 	}
@@ -1595,7 +1598,8 @@ public class DebuggerListingProviderTest extends AbstractGhidraHeadedDebuggerGUI
 
 		DebuggerOpenProgramActionContext ctx = new DebuggerOpenProgramActionContext(df);
 		waitForPass(() -> assertTrue(consolePlugin.logContains(ctx)));
-		assertTrue(consolePlugin.getLogRow(ctx).getMessage().contains("recovery"));
+		assertTrue(consolePlugin.getLogRow(ctx).getMessage() instanceof String message &&
+			message.contains("recovery"));
 	}
 
 	@Test
@@ -1623,7 +1627,8 @@ public class DebuggerListingProviderTest extends AbstractGhidraHeadedDebuggerGUI
 
 		DebuggerOpenProgramActionContext ctx = new DebuggerOpenProgramActionContext(df);
 		waitForPass(() -> assertTrue(consolePlugin.logContains(ctx)));
-		assertTrue(consolePlugin.getLogRow(ctx).getMessage().contains("version"));
+		assertTrue(consolePlugin.getLogRow(ctx).getMessage() instanceof String message &&
+			message.contains("version"));
 	}
 
 	@Test
@@ -1640,7 +1645,7 @@ public class DebuggerListingProviderTest extends AbstractGhidraHeadedDebuggerGUI
 		consolePlugin.log(DebuggerResources.ICON_MODULES, "Test resolution", ctx);
 		waitForSwing();
 
-		LogRow row = consolePlugin.getLogRow(ctx);
+		LogRow<?> row = consolePlugin.getLogRow(ctx);
 		assertEquals(1, row.getActions().size());
 		BoundAction boundAction = row.getActions().get(0);
 		assertEquals(listingProvider.actionOpenProgram, boundAction.action);

@@ -15,9 +15,12 @@
  */
 package ghidra.app.util.opinion;
 
+import java.io.IOException;
 import java.math.BigInteger;
 import java.util.*;
 
+import ghidra.app.plugin.core.analysis.rust.RustConstants;
+import ghidra.app.plugin.core.analysis.rust.RustUtilities;
 import ghidra.app.util.MemoryBlockUtils;
 import ghidra.app.util.bin.*;
 import ghidra.app.util.bin.format.RelocationException;
@@ -118,7 +121,6 @@ public class MachoProgramBuilder {
 		// Setup memory
 		setImageBase();
 		processMemoryBlocks(machoHeader, provider.getName(), true, true);
-		fixupProgramTree();
 
 		// Process load commands
 		processEntryPoint();
@@ -139,7 +141,7 @@ public class MachoProgramBuilder {
 		// Markup structures
 		markupHeaders(machoHeader, setupHeaderAddr(machoHeader.getAllSegments()));
 		markupSections();
-		markupLoadCommandData(machoHeader, null);
+		markupLoadCommandData(machoHeader, provider.getName());
 		markupChainedFixups(machoHeader, chainedFixups);
 		markupProgramVars();
 
@@ -149,6 +151,8 @@ public class MachoProgramBuilder {
 
 		// Perform additional actions
 		renameObjMsgSendRtpSymbol();
+		fixupProgramTree(null); // should be done last to account for new memory blocks
+		setCompiler();
 	}
 	
 	/**
@@ -196,32 +200,27 @@ public class MachoProgramBuilder {
 		}
 
 		// Create memory blocks for segments.
-		ListIterator<SegmentCommand> it = header.getAllSegments().listIterator();
-		while (it.hasNext()) {
-			int i = it.nextIndex();
-			final SegmentCommand segment = it.next();
-
+		for (SegmentCommand segment : header.getAllSegments()) {
 			if (monitor.isCancelled()) {
 				break;
 			}
 
-			if (segment.getFileSize() > 0 && (allowZeroAddr || segment.getVMaddress() != 0)) {
-				String segmentName = segment.getSegmentName();
-				if (segmentName.isBlank()) {
-					segmentName = "SEGMENT." + i;
-				}
-				if (createMemoryBlock(segmentName, space.getAddress(segment.getVMaddress()),
-					segment.getFileOffset(), segment.getFileSize(), segmentName, source,
-					segment.isRead(), segment.isWrite(), segment.isExecute(), false) == null) {
+			if (segment.getFileSize() > 0 && segment.getVMsize() > 0 &&
+				(allowZeroAddr || segment.getVMaddress() != 0)) {
+				if (createMemoryBlock(segment.getSegmentName(),
+					space.getAddress(segment.getVMaddress()), segment.getFileOffset(),
+					segment.getFileSize(), segment.getSegmentName(), source, segment.isRead(),
+					segment.isWrite(), segment.isExecute(), false) == null) {
 					log.appendMsg(String.format("Failed to create block: %s 0x%x 0x%x",
 						segment.getSegmentName(), segment.getVMaddress(), segment.getVMsize()));
 				}
 				if (segment.getVMsize() > segment.getFileSize()) {
 					// Pad the remaining address range with uninitialized data
-					if (createMemoryBlock(segmentName,
+					if (createMemoryBlock(segment.getSegmentName(),
 						space.getAddress(segment.getVMaddress()).add(segment.getFileSize()), 0,
-						segment.getVMsize() - segment.getFileSize(), segmentName, source,
-						segment.isRead(), segment.isWrite(), segment.isExecute(), true) == null) {
+						segment.getVMsize() - segment.getFileSize(), segment.getSegmentName(),
+						source, segment.isRead(), segment.isWrite(), segment.isExecute(),
+						true) == null) {
 						log.appendMsg(String.format("Failed to create block: %s 0x%x 0x%x",
 							segment.getSegmentName(), segment.getVMaddress(), segment.getVMsize()));
 					}
@@ -337,15 +336,16 @@ public class MachoProgramBuilder {
 	/**
 	 * Fixes up the Program Tree to better visualize the memory blocks that were split into sections
 	 * 
+	 * @param suffix An optional suffix that will get appended to tree segment and segment nodes
 	 * @throws Exception if there was a problem fixing up the Program Tree
 	 */
-	protected void fixupProgramTree() throws Exception {
+	protected void fixupProgramTree(String suffix)
+			throws Exception {
+		if (suffix == null) {
+			suffix = "";
+		}
 		ProgramModule rootModule = listing.getDefaultRootModule();
-		ListIterator<SegmentCommand> it = machoHeader.getAllSegments().listIterator();
-		while (it.hasNext()) {
-			int i = it.nextIndex();
-			SegmentCommand segment = it.next();
-
+		for (SegmentCommand segment : machoHeader.getAllSegments()) {
 			if (segment.getVMsize() == 0) {
 				continue;
 			}
@@ -361,10 +361,7 @@ public class MachoProgramBuilder {
 			// section fragments, it will represent the parts of the segment that weren't in any
 			// section.
 			String segmentName = segment.getSegmentName();
-			if (segmentName.isBlank()) {
-				segmentName = "SEGMENT." + i;
-			}
-			String noSectionsName = segmentName + " <no section>";
+			String noSectionsName = segmentName + " <no section>" + suffix;
 			ProgramFragment segmentFragment = null;
 			for (Group group : rootModule.getChildren()) {
 				if (group instanceof ProgramFragment fragment &&
@@ -378,7 +375,7 @@ public class MachoProgramBuilder {
 				log.appendMsg("Could not find/fixup segment in Program Tree: " + segmentName);
 				continue;
 			}
-			ProgramModule segmentModule = rootModule.createModule(segmentName);
+			ProgramModule segmentModule = rootModule.createModule(segmentName + suffix);
 			try {
 				segmentModule.reparent(noSectionsName, rootModule);
 			}
@@ -397,14 +394,24 @@ public class MachoProgramBuilder {
 				if (!memory.contains(sectionEnd)) {
 					sectionEnd = memory.getBlock(sectionStart).getEnd();
 				}
-				ProgramFragment sectionFragment = segmentModule.createFragment(
-					String.format("%s %s", section.getSegmentName(), section.getSectionName()));
+				ProgramFragment sectionFragment =
+					segmentModule.createFragment(String.format("%s %s", section.getSegmentName(),
+						section.getSectionName() + suffix));
 				sectionFragment.move(sectionStart, sectionEnd);
 			}
 			
 			// If the sections fully filled the segment, we can remove the now-empty segment
 			if (segmentFragment.isEmpty()) {
 				segmentModule.removeChild(segmentFragment.getName());
+			}
+		}
+
+		// Update EXTERNAL block if it exists
+		for (Group group : rootModule.getChildren()) {
+			if (group instanceof ProgramFragment fragment &&
+				fragment.getName().equals(MemoryBlock.EXTERNAL_BLOCK_NAME)) {
+				fragment.setName(MemoryBlock.EXTERNAL_BLOCK_NAME + suffix);
+				break;
 			}
 		}
 	}
@@ -483,9 +490,7 @@ public class MachoProgramBuilder {
 		for (ExportEntry export : exports) {
 			String name = SymbolUtilities.replaceInvalidChars(export.name(), true);
 			try {
-				Address exportAddr = baseAddr.add(export.address());
-				program.getSymbolTable().addExternalEntryPoint(exportAddr);
-				program.getSymbolTable().createLabel(exportAddr, name, SourceType.IMPORTED);
+				processNewExport(baseAddr, export, name);
 			}
 			catch (AddressOutOfBoundsException e) {
 				log.appendMsg("Failed to process export '" + export + "': " + e.getMessage());
@@ -497,6 +502,13 @@ public class MachoProgramBuilder {
 
 		return !exports.isEmpty();
  	}
+
+	protected void processNewExport(Address baseAddr, ExportEntry export, String name)
+			throws AddressOutOfBoundsException, Exception {
+		Address exportAddr = baseAddr.add(export.address());
+		program.getSymbolTable().addExternalEntryPoint(exportAddr);
+		program.getSymbolTable().createLabel(exportAddr, name, SourceType.IMPORTED);
+	}
 
 	protected void processSymbolTables(MachHeader header, boolean processExports) throws Exception {
 		monitor.setMessage("Processing symbol tables...");
@@ -683,6 +695,8 @@ public class MachoProgramBuilder {
 				String name = SymbolUtilities.replaceInvalidChars(symbol.getString(), true);
 				if (name != null && name.length() > 0) {
 					program.getSymbolTable().createLabel(start, name, SourceType.IMPORTED);
+					program.getExternalManager()
+							.addExtLocation(Library.UNKNOWN, name, start, SourceType.IMPORTED);
 				}
 			}
 			catch (Exception e) {
@@ -1186,10 +1200,10 @@ public class MachoProgramBuilder {
 			}
 
 			if (libraryPath != null) {
-				libraryPaths.add(libraryPath);
 				int index = libraryPath.lastIndexOf("/");
 				String libraryName = index != -1 ? libraryPath.substring(index + 1) : libraryPath;
 				if (!libraryName.equals(program.getName())) {
+					libraryPaths.add(libraryPath);
 					addLibrary(libraryPath);
 					props.setString(
 						ExternalSymbolResolver.getRequiredLibraryProperty(libraryIndex++),
@@ -1343,7 +1357,15 @@ public class MachoProgramBuilder {
 	}
 
 	private Address getAddress() {
-		Address maxAddress = program.getMaxAddress();
+		Address maxAddress = null;
+		for (MemoryBlock block : program.getMemory().getBlocks()) {
+			if (block.isOverlay()) {
+				continue;
+			}
+			if (maxAddress == null || block.getEnd().compareTo(maxAddress) > 0) {
+				maxAddress = block.getEnd();
+			}
+		}
 		if (maxAddress == null) {
 			return space.getAddress(0x1000);
 		}
@@ -1666,6 +1688,29 @@ public class MachoProgramBuilder {
 		for (int i = 0; i < frameworks.size(); ++i) {
 			props.setString("Mach-O Sub-framework " + i,
 				frameworks.get(i).getUmbrellaFrameworkName().getString());
+		}
+	}
+
+	protected void setCompiler() {
+		// Check for Rust
+		try {
+			SegmentCommand segment = machoHeader.getSegment(SegmentNames.SEG_TEXT);
+			if (segment == null) {
+				return;
+			}
+			Section section = segment.getSectionByName(SectionNames.TEXT_CONST);
+			if (section == null) {
+				return;
+			}
+			if (RustUtilities.isRust(memory.getBlock(space.getAddress(section.getAddress())))) {
+				program.setCompiler(RustConstants.RUST_COMPILER);
+				int extensionCount = RustUtilities.addExtensions(program, monitor,
+					RustConstants.RUST_EXTENSIONS_UNIX);
+				log.appendMsg("Installed " + extensionCount + " Rust cspec extensions");
+			}
+		}
+		catch (IOException e) {
+			log.appendMsg("Rust error: " + e.getMessage());
 		}
 	}
 

@@ -376,14 +376,14 @@ def _continue(process: sch.Schema('Process')):
 
 
 @REGISTRY.method
-def interrupt():
+def interrupt(process: sch.Schema('Process')):
     """Interrupt the execution of the debugged program."""
     dbg()._control.SetInterrupt(DbgEng.DEBUG_INTERRUPT_ACTIVE)
 
 
 @REGISTRY.method(action='step_into')
 def step_into(thread: sch.Schema('Thread'), n: ParamDesc(int, display='N')=1):
-    """Step on instruction exactly."""
+    """Step one instruction exactly."""
     find_thread_by_obj(thread)
     dbg().stepi(n)
 
@@ -511,7 +511,7 @@ def write_mem(process: sch.Schema('Process'), address: Address, data: bytes):
 
 
 @REGISTRY.method
-def write_reg(frame: sch.Schema('Frame'), name: str, value: bytes):
+def write_reg(frame: sch.Schema('StackFrame'), name: str, value: bytes):
     """Write a register."""
     util.select_frame()
     nproc = pydbg.selected_process()

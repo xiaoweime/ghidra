@@ -79,16 +79,11 @@ import ghidra.util.task.TaskMonitor;
 	packageName = DebuggerPluginPackage.NAME,
 	status = PluginStatus.RELEASED,
 	eventsConsumed = {
-		ProgramActivatedPluginEvent.class,
-		ProgramClosedPluginEvent.class,
-	},
+		ProgramActivatedPluginEvent.class, ProgramClosedPluginEvent.class, },
 	servicesRequired = {
 		DebuggerTargetService.class,
-		DebuggerTraceManagerService.class,
-	},
-	servicesProvided = {
-		DebuggerModelService.class,
-	})
+		DebuggerTraceManagerService.class, },
+	servicesProvided = { DebuggerModelService.class, })
 public class DebuggerModelServiceProxyPlugin extends Plugin
 		implements DebuggerModelServiceInternal {
 
@@ -158,17 +153,17 @@ public class DebuggerModelServiceProxyPlugin extends Plugin
 			implements CollectionChangeListener<DebuggerModelFactory> {
 		@Override
 		public void elementAdded(DebuggerModelFactory element) {
-			factoryListeners.fire.elementAdded(element);
+			factoryListeners.invoke().elementAdded(element);
 		}
 
 		@Override
 		public void elementRemoved(DebuggerModelFactory element) {
-			factoryListeners.fire.elementRemoved(element);
+			factoryListeners.invoke().elementRemoved(element);
 		}
 
 		@Override
 		public void elementModified(DebuggerModelFactory element) {
-			factoryListeners.fire.elementModified(element);
+			factoryListeners.invoke().elementModified(element);
 		}
 	}
 
@@ -176,7 +171,7 @@ public class DebuggerModelServiceProxyPlugin extends Plugin
 			implements CollectionChangeListener<DebuggerObjectModel> {
 		@Override
 		public void elementAdded(DebuggerObjectModel element) {
-			modelListeners.fire.elementAdded(element);
+			modelListeners.invoke().elementAdded(element);
 			if (currentModel == null) {
 				activateModel(element);
 			}
@@ -187,12 +182,12 @@ public class DebuggerModelServiceProxyPlugin extends Plugin
 			if (currentModel == element) {
 				activateModel(null);
 			}
-			modelListeners.fire.elementRemoved(element);
+			modelListeners.invoke().elementRemoved(element);
 		}
 
 		@Override
 		public void elementModified(DebuggerObjectModel element) {
-			modelListeners.fire.elementModified(element);
+			modelListeners.invoke().elementModified(element);
 		}
 	}
 
@@ -200,25 +195,32 @@ public class DebuggerModelServiceProxyPlugin extends Plugin
 			implements CollectionChangeListener<TraceRecorder> {
 		@Override
 		public void elementAdded(TraceRecorder element) {
-			recorderListeners.fire.elementAdded(element);
-			Swing.runIfSwingOrRunLater(() -> {
+			recorderListeners.invoke().elementAdded(element);
+			Swing.runLater(() -> {
 				TraceRecorderTarget target = new TraceRecorderTarget(tool, element);
-				targets.put(element, target);
+				if (targets.put(element, target) == target) {
+					return;
+				}
 				targetService.publishTarget(target);
 			});
 		}
 
 		@Override
 		public void elementRemoved(TraceRecorder element) {
-			recorderListeners.fire.elementRemoved(element);
-			Swing.runIfSwingOrRunLater(() -> {
-				targetService.withdrawTarget(Objects.requireNonNull(targets.get(element)));
+			recorderListeners.invoke().elementRemoved(element);
+			Swing.runLater(() -> {
+				TraceRecorderTarget target = targets.remove(element);
+				if (target == null) {
+					return;
+				}
+				targetService.withdrawTarget(target);
 			});
+
 		}
 
 		@Override
 		public void elementModified(TraceRecorder element) {
-			recorderListeners.fire.elementModified(element);
+			recorderListeners.invoke().elementModified(element);
 		}
 	}
 
@@ -249,11 +251,11 @@ public class DebuggerModelServiceProxyPlugin extends Plugin
 	DockingAction actionDisconnectAll;
 
 	protected final ListenerSet<CollectionChangeListener<DebuggerModelFactory>> factoryListeners =
-		new ListenerSet<>(CollectionChangeListener.of(DebuggerModelFactory.class));
+		new ListenerSet<>(CollectionChangeListener.of(DebuggerModelFactory.class), true);
 	protected final ListenerSet<CollectionChangeListener<DebuggerObjectModel>> modelListeners =
-		new ListenerSet<>(CollectionChangeListener.of(DebuggerObjectModel.class));
+		new ListenerSet<>(CollectionChangeListener.of(DebuggerObjectModel.class), true);
 	protected final ListenerSet<CollectionChangeListener<TraceRecorder>> recorderListeners =
-		new ListenerSet<>(CollectionChangeListener.of(TraceRecorder.class));
+		new ListenerSet<>(CollectionChangeListener.of(TraceRecorder.class), true);
 
 	protected final Map<TraceRecorder, TraceRecorderTarget> targets = new HashMap<>();
 
@@ -278,8 +280,7 @@ public class DebuggerModelServiceProxyPlugin extends Plugin
 		// Note, I have to give an enabledWhen, otherwise any context change re-enables it
 		MultiStateActionBuilder<DebuggerProgramLaunchOffer> builderDebugProgram =
 			DebugProgramAction.buttonBuilder(this, delegate);
-		actionDebugProgram = builderDebugProgram
-				.enabledWhen(ctx -> currentProgram != null)
+		actionDebugProgram = builderDebugProgram.enabledWhen(ctx -> currentProgram != null)
 				.onAction(this::debugProgramButtonActivated)
 				.onActionStateChanged(this::debugProgramStateActivated)
 				.addState(DUMMY_LAUNCH_STATE)
@@ -333,8 +334,8 @@ public class DebuggerModelServiceProxyPlugin extends Plugin
 	protected void writeMostRecentLaunches(Program program, List<String> mrl) {
 		ProgramUserData userData = program.getProgramUserData();
 		try (Transaction tid = userData.openTransaction()) {
-			StringPropertyMap prop = userData
-					.getStringProperty(getName(), KEY_MOST_RECENT_LAUNCHES, true);
+			StringPropertyMap prop =
+				userData.getStringProperty(getName(), KEY_MOST_RECENT_LAUNCHES, true);
 			Address min = program.getAddressFactory().getDefaultAddressSpace().getMinAddress();
 			prop.add(min, mrl.stream().collect(Collectors.joining(";")));
 		}
@@ -425,8 +426,7 @@ public class DebuggerModelServiceProxyPlugin extends Plugin
 		List<DebuggerProgramLaunchOffer> offers = program == null ? List.of()
 				: getProgramLaunchOffers(program).collect(Collectors.toList());
 		List<ActionState<DebuggerProgramLaunchOffer>> states = offers.stream()
-				.map(o -> new ActionState<>(o.getButtonTitle(),
-					o.getIcon(), o))
+				.map(o -> new ActionState<>(o.getButtonTitle(), o.getIcon(), o))
 				.collect(Collectors.toList());
 		if (!states.isEmpty()) {
 			actionDebugProgram.setActionStates(states);

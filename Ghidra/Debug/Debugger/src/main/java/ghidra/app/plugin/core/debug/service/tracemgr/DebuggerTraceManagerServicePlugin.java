@@ -75,7 +75,10 @@ import ghidra.util.task.*;
 	packageName = DebuggerPluginPackage.NAME,
 	status = PluginStatus.RELEASED,
 	eventsProduced = {
+		TraceOpenedPluginEvent.class,
 		TraceActivatedPluginEvent.class,
+		TraceInactiveCoordinatesPluginEvent.class,
+		TraceClosedPluginEvent.class,
 	},
 	eventsConsumed = {
 		TraceActivatedPluginEvent.class,
@@ -284,6 +287,8 @@ public class DebuggerTraceManagerServicePlugin extends Plugin
 	private DebuggerPlatformService platformService;
 	// @AutoServiceConsumed via method
 	private DebuggerControlService controlService;
+	@AutoServiceConsumed
+	private NavigationHistoryService navigationHistoryService;
 	@SuppressWarnings("unused")
 	private final AutoService.Wiring autoServiceWiring;
 
@@ -463,7 +468,7 @@ public class DebuggerTraceManagerServicePlugin extends Plugin
 	}
 
 	@AutoServiceConsumed
-	private void setModelService(DebuggerTargetService targetService) {
+	private void setTargetService(DebuggerTargetService targetService) {
 		if (this.targetService != null) {
 			this.targetService.removeTargetPublicationListener(forTargetsListener);
 		}
@@ -959,6 +964,9 @@ public class DebuggerTraceManagerServicePlugin extends Plugin
 	}
 
 	protected void doTraceClosed(Trace trace) {
+		if (navigationHistoryService != null) {
+			navigationHistoryService.clear(trace.getProgramView());
+		}
 		synchronized (listenersByTrace) {
 			trace.release(this);
 			lastCoordsByTrace.remove(trace);
@@ -1038,7 +1046,7 @@ public class DebuggerTraceManagerServicePlugin extends Plugin
 			}
 			if (current.getTrace() != newTrace) {
 				/**
-				 * The snap needs to match upon re-activating this trace, lset it look like the user
+				 * The snap needs to match upon re-activating this trace, lest it look like the user
 				 * intentionally navigated to the past. That may cause the control mode to switch
 				 * off of "Target."
 				 */
@@ -1082,6 +1090,12 @@ public class DebuggerTraceManagerServicePlugin extends Plugin
 	@Override
 	public DebuggerCoordinates resolveTrace(Trace trace) {
 		return getCurrentFor(trace).trace(trace);
+	}
+
+	@Override
+	public DebuggerCoordinates resolveTarget(Target target) {
+		Trace trace = target == null ? null : target.getTrace();
+		return getCurrentFor(trace).target(target).snap(target.getSnap());
 	}
 
 	@Override

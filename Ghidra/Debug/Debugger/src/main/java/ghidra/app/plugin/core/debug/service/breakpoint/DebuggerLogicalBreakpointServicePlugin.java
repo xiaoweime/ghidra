@@ -228,7 +228,8 @@ public class DebuggerLogicalBreakpointServicePlugin extends Plugin
 		}
 
 		private void breakpointAdded(TraceBreakpoint tb) {
-			if (!tb.getLifespan().contains(info.snap)) {
+			Lifespan span = tb.getLifespan();
+			if (span == null || !span.contains(info.snap)) {
 				return;
 			}
 			try {
@@ -600,6 +601,9 @@ public class DebuggerLogicalBreakpointServicePlugin extends Plugin
 				return;
 			}
 			Address traceAddr = tb.getMinAddress();
+			if (traceAddr == null) {
+				return; // Will update via breakpointChanged when address is set
+			}
 			ProgramLocation progLoc = computeStaticLocation(tb);
 			LogicalBreakpointInternal lb;
 			if (progLoc != null) {
@@ -815,7 +819,7 @@ public class DebuggerLogicalBreakpointServicePlugin extends Plugin
 
 	private final Object lock = new Object();
 	private final ListenerSet<LogicalBreakpointsChangeListener> changeListeners =
-		new ListenerSet<>(LogicalBreakpointsChangeListener.class);
+		new ListenerSet<>(LogicalBreakpointsChangeListener.class, true);
 
 	private final TrackRecordersListener targetsListener = new TrackRecordersListener();
 	private final TrackMappingsListener mappingListener = new TrackMappingsListener();
@@ -835,7 +839,7 @@ public class DebuggerLogicalBreakpointServicePlugin extends Plugin
 	protected void processChange(Consumer<ChangeCollector> processor, String description) {
 		executor.submit(() -> {
 			// Invoke change callbacks without the lock! (try must surround sync)
-			try (ChangeCollector c = new ChangeCollector(changeListeners.fire)) {
+			try (ChangeCollector c = new ChangeCollector(changeListeners.invoke())) {
 				synchronized (lock) {
 					processor.accept(c);
 				}
@@ -1112,7 +1116,11 @@ public class DebuggerLogicalBreakpointServicePlugin extends Plugin
 	public LogicalBreakpoint getBreakpoint(TraceBreakpoint bpt) {
 		Trace trace = bpt.getTrace();
 		synchronized (lock) {
-			for (LogicalBreakpoint lb : getBreakpointsAt(trace, bpt.getMinAddress())) {
+			Address address = bpt.getMinAddress();
+			if (address == null) {
+				return null;
+			}
+			for (LogicalBreakpoint lb : getBreakpointsAt(trace, address)) {
 				if (lb.getTraceBreakpoints(trace).contains(bpt)) {
 					return lb;
 				}
